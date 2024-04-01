@@ -1,0 +1,6 @@
+.venv
+.env
+chunks
+output-mp3
+output-txt
+transcripts
