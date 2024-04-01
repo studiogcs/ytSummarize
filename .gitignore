@@ -1,6 +1,9 @@
 .venv
 .env
+audio
 chunks
-output-mp3
-output-txt
-transcripts
+transcript
+summary
+urls.local.txt
+
+.DS_Store

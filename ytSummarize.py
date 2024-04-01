@@ -7,20 +7,52 @@ import soundfile as sf
 import librosa
 import time
 from functools import wraps
+from distutils.util import strtobool
 
-# To run with input, execute $ python ytSummarize --url <youtube url>
-# Otherwise, include the url in the urls.txt file (format must be "https://www.youtube.com/...")
+# ------------------------------------------------------------------------------------------------
+# PROMPT ENGINEERING
+# ------------------------------------------------------------------------------------------------
 
-AUDIO_PATH = "./output-mp3"
-CHUNKS_PATH = "./chunks"
-TRANSCRIPT_PATH = "./transcripts"
-SUMMARY_PATH = "./output-text"
-CHUNK_LEN = 10 * 60 # 10 minute segments
+# Generic prompt: 
+# SUMMARY_PROMPT = """You are a helpful assistant that summarizes youtube videos. 
+#                 You are provided chunks of raw audio that were transcribed from the video's audio. 
+#                 Summarize the current chunk to succint and clear bullet points of its contents.
+#                 """
 
+# Custom prompt:
+SUMMARY_PROMPT = """You are a helpful assistant that summarizes youtube videos. 
+                You are provided chunks of raw audio that were transcribed from the video's audio. 
+                Summarize the current chunk, and make bulleted lists for each of the following, with brief descriptions:
+                1. names of organizations, startups, or companies; 2. the names of innovative technology solutions and projects; 
+                3. added value and benefits provided by these technologies to specific stakeholders.
+                """
+
+# ------------------------------------------------------------------------------------------------
+# SETUP
+# ------------------------------------------------------------------------------------------------
 load_dotenv()
+
+DEBUG = bool(strtobool(os.getenv('DEBUG')))
+OVERWRITE_AUDIO = bool(strtobool(os.getenv('OVERWRITE_AUDIO')))
+OVERWRITE_TRANSCRIPTION = bool(strtobool(os.getenv('OVERWRITE_TRANSCRIPTION')))
+OVERWRITE_SUMMARY = bool(strtobool(os.getenv('OVERWRITE_SUMMARY')))
+
+if DEBUG:
+    URLS_PATH = "urls.local.txt"
+else:
+    URLS_PATH = "urls.txt"
+
+AUDIO_PATH = "./audio"
+CHUNKS_PATH = "./chunks"
+TRANSCRIPT_PATH = "./transcript"
+SUMMARY_PATH = "./summary"
+CHUNK_LEN = 10 * 60 # 10 minute segments
 
 client = OpenAI()
 
+# ------------------------------------------------------------------------------------------------
+# FUNCTIONS
+# ------------------------------------------------------------------------------------------------
 def timer(func):
     @wraps(func)
     def wrapper(*args, **kwargs):
@@ -41,15 +73,20 @@ def isURL(input):
     return True
 
 def getAudio(url):
-    print("Fetching audio...")
     yt = YouTube(url)
-    video = yt.streams.filter(only_audio=True).first()
-    out_file = video.download(output_path=AUDIO_PATH)
-    base, ext = os.path.splitext(out_file)
-    new_file = base+'.mp3'
-    os.rename(out_file, new_file)
-    print(yt.title + " has been successfully downloaded.")
-    return new_file, yt.title
+
+    output_file = yt.title+'.mp3'
+
+    if OVERWRITE_AUDIO or output_file not in os.listdir(os.path.join(AUDIO_PATH)):
+        print("Fetching audio...")
+        video = yt.streams.filter(only_audio=True).first()
+        out_file = video.download(output_path=AUDIO_PATH)
+        base, ext = os.path.splitext(out_file)
+        new_file = base+'.mp3'
+        os.rename(out_file, new_file)
+        print(yt.title + " has been successfully downloaded.")
+    
+    return yt.title
 
 def find_audio_files(path, extension=".mp3"):
     """Recursively find all files with extension in path."""
@@ -76,7 +113,7 @@ def chunk_audio(filename, segment_length: int, output_dir): # segment length in 
         start = i * segment_length * sr
         end = (i + 1) * segment_length * sr
         segment = audio_data[start:end]
-        sf.write(os.path.join(output_dir, f"segment_{i}.mp3"), segment, sr)
+        sf.write(os.path.join(output_dir, f"{filename}_segment_{i}.mp3"), segment, sr)
 
     chunked_audio_files = find_audio_files(output_dir)
     return sorted(chunked_audio_files)
@@ -99,54 +136,74 @@ def transcribe_audio(audio_files: list, output_file=None, model="whisper-1") -> 
     return transcripts
 
 @timer
-def summarize(chunks: list[str], system_prompt: str, model="gpt-3.5-turbo", output_file=None):
-    print(f"Summarizing with {model=}")
-    summaries = []
-    for chunk in chunks:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": chunk},
-            ],
-            temperature=0
-        )
-        summary = response.choices[0].message.content
-        summaries.append(summary)
+def summarize(path, filename, system_prompt: str, output_file, model="gpt-3.5-turbo"):
+    print(f"Summarizing with {model=}...")
 
-    if output_file is not None:
-        with open(output_file, "w") as file:
-            for summary in summaries:
-                file.write(summary + "\n")
-    
-    return summaries
+    if filename in os.listdir(path):
+        with open(os.path.join(path, filename)) as chunks:
+            summaries = []
+            for chunk in chunks: 
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": chunk},
+                    ],
+                    temperature=0
+                )
+                summary = response.choices[0].message.content
+                summaries.append(summary)
 
-def run(url):
-    print('Checking URL:', url)
-    try:
-        if isURL(url):
-            # file_path, filename = getAudio(url)
-
-            filename = "Top Food Tech Trends Transforming the Industry in 2023"
-            file_path = os.path.join(AUDIO_PATH, filename + '.mp3')
-
-            # chunked_audio_files = chunk_audio(file_path, segment_length=CHUNK_LEN, output_dir=CHUNKS_PATH)
+            print("Generating summaries for each prompt...")
+            full_text = ''
+            with open(output_file + "_summaries", "w") as file:
+                for summary in summaries:
+                    file.write(summary + "\n")
+                    full_text = full_text + summary + "\n"
             
-            # transcriptions = transcribe_audio(chunked_audio_files, os.path.join(TRANSCRIPT_PATH, filename+'.txt'))
-            
-            summarize(
-                transcriptions, 
-                system_prompt= """You are a helpful assistant that summarizes youtube videos. 
-                You are provided chunks of raw audio that were transcribed from the video's audio. 
-                Summarize the current chunk to succint and clear bullet points of its contents.
-                """, 
-                output_file=os.path.join(SUMMARY_PATH, filename+'.txt')
+            print("Combining into a single summary...")
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": f"This text contains multiple chatGPT speech-to-text summaries, each one corresponding to a chunk of the same audio file. Please combine these summaries into one coeherent text, without losing the original format: keep using bulleted lists and keep the same division of topics. Do not lose information by summarizing further."},
+                    {"role": "user", "content": full_text},
+                ],
+                temperature=0
             )
-        else:
-            print("ERROR: Invalid URL")
+            summary = response.choices[0].message.content
+            with open(output_file, "w") as file:
+                file.write(summary + "\n")
+
+def run(url=None):
+    try:
+        print('Checking URL:', url)
+        if isURL(url):
+            filename = getAudio(url)
+                
+            audio_output_file_path = os.path.join(AUDIO_PATH, filename + '.mp3')
+            transcript_output_file_path = os.path.join(TRANSCRIPT_PATH, filename+'.txt')
+            summary_output_file_path = os.path.join(SUMMARY_PATH, filename+'.txt')
+
+            if OVERWRITE_TRANSCRIPTION or not transcript_output_file_path.split('/')[-1] in os.listdir(TRANSCRIPT_PATH):
+                chunked_audio_files = chunk_audio(audio_output_file_path, segment_length=CHUNK_LEN, output_dir=CHUNKS_PATH)
+                transcribe_audio(
+                    audio_files=chunked_audio_files, 
+                    output_file=transcript_output_file_path,
+                )
+            
+            if OVERWRITE_SUMMARY or not summary_output_file_path.split('/')[-1] in os.listdir(SUMMARY_PATH):
+                summarize(
+                    path=TRANSCRIPT_PATH,
+                    filename=filename+'.txt', 
+                    output_file=summary_output_file_path,
+                    system_prompt=SUMMARY_PROMPT,
+                )
     except Exception as e:
         print(e)
 
+# ------------------------------------------------------------------------------------------------
+# MAIN
+# ------------------------------------------------------------------------------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Summarize as text the audio from a YouTube video. Input: video url.')
     parser.add_argument('--url', type=str, help='YouTube video URL')
@@ -154,8 +211,8 @@ if __name__ == "__main__":
     url = args.url
 
     if url:
-        run(url)
+        run(url=url)
     else:
-        with open("urls.txt") as f: 
+        with open(URLS_PATH) as f: 
             for line in f:
-                run(line)
+                run(url=line)
