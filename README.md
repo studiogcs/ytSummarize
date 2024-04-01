@@ -25,7 +25,7 @@ You should also set up the following files:
 - `urls.local.txt`: this file is the same as `urls.txt` but for when `DEBUG`is set to True. The format *must* be "https://www.youtube.com/...". You can include multiple urls, line by line. 
 
 ## How to run
-Go to the root directory. In terminal, activate the virtual environment and run:
+Go to the root directory and create a virtual environment via .venv directory. In terminal, activate the virtual environment and run:
 
     $ source .venv/bin/activate
     $ python ytSummarize.py --url <video url>
